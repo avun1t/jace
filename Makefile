@@ -4,3 +4,6 @@ jace: jace.c
 .PHONY: install
 install: jace
 	sudo cp jace /usr/bin/jace
+
+clean:
+	rm jace
