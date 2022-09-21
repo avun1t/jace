@@ -353,7 +353,7 @@ void editorUpdateSyntax(erow *row)
 
 	while(*p) {
 		if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
-			memset(row->hl+i,HL_COMMENT,row->size-i);
+			memset(row->hl+i,HL_COMMENT,row->rsize-i);
 			return;
 		}
 
@@ -381,7 +381,7 @@ void editorUpdateSyntax(erow *row)
 
 		if (in_string) {
 			row->hl[i] = HL_STRING;
-			if (*p == '\\') {
+			if (*p == '\\' && *(p+1)) {
 				row->hl[i+1] = HL_STRING;
 				p += 2; i += 2;
 				prev_sep = 0;
@@ -417,12 +417,14 @@ void editorUpdateSyntax(erow *row)
 
 		if (prev_sep) {
 			int j;
+			int ileft = row->rsize - i;
+
 			for (j = 0; keywords[j]; j++) {
 				int klen = strlen(keywords[j]);
 				int kw2 = keywords[j][klen-1] == '|';
 				if (kw2) klen--;
 
-				if (!memcmp(p,keywords[j],klen) && is_separator(*(p+klen))) {
+				if (klen < ileft && !memcmp(p,keywords[j],klen) && is_separator(*(p+klen))) {
 					memset(row->hl+i,kw2 ? HL_KEYWORD2 : HL_KEYWORD1,klen);
 					p += klen;
 					i += klen;
@@ -502,7 +504,7 @@ void editorUpdateRow(erow *row)
 	for (j = 0; j < row->size; j++) {
 		if (row->chars[j] == TAB) {
 			row->render[idx++] = ' ';
-			while((idx+1) % 8 != 0) row->render[idx++] = ' ';
+			while(idx % 8 != 0) row->render[idx++] = ' ';
 		} else {
 			row->render[idx++] = row->chars[j];
 		}
@@ -885,7 +887,7 @@ void editorRefreshScreen(void)
 	// put cursor at its current position
 	// horizontal pos of cursor might be different than E.cx because of TABs
 	int j;
-	int cx = 1;
+	int cx = 0;
 	int filerow = E.rowoff+E.cy;
 	erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
 
@@ -896,7 +898,7 @@ void editorRefreshScreen(void)
 		}
 	}
 
-	snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx);
+	snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx+1);
 	abAppend(&ab,buf,strlen(buf));
 	abAppend(&ab,"\x1b[?25h",6); // show cursor
 	write(STDOUT_FILENO,ab.b,ab.len);
@@ -1107,8 +1109,15 @@ void editorProcessKeypress(int fd)
 				"Press Ctrl-Q again to quit.", quit_times);
 			quit_times--;
 			return;
+		} else {
+			char buf[32];
+			struct abuf ab = ABUF_INIT;
+			snprintf(buf, sizeof(buf), "\x1b[%d;%dH\r\n",E.screenrows+2,1);
+			abAppend(&ab,buf,strlen(buf));
+			write(STDOUT_FILENO,ab.b,ab.len);
+			abFree(&ab);
+			exit(0);
 		}
-		exit(0);
 		break;
 	case CTRL_S:
 		editorSave();
