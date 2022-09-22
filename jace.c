@@ -138,11 +138,15 @@ char *C_HL_keywords[] = {
 
 // Python
 
-char *PY_HL_extensions[] = {".py",NULL};
+char *PY_HL_extensions[] = {".py","python",NULL};
 char *PY_HL_keywords[] = {
-	"(|",")|",
-	// Keywords
-	"case",NULL
+	"def","if","while","for","break","return","continue","else","elif",
+	"import","try","except","in","and","or","is","not","with","as",
+	"True","False","None","class",
+	
+	// Python types
+	"int|","str|","unicode|","dict|","float|","repr|","long|","eval|",
+	"tuple|","list|","set|","frozenset|","chr|","unichr|","ord|","hex|",NULL
 };
 
 struct editorSyntax HLDB[] = {
@@ -156,7 +160,7 @@ struct editorSyntax HLDB[] = {
 	{
 		PY_HL_extensions,
 		PY_HL_keywords,
-		"# ","# ","# ",
+		"#","\0\0\0","\0\0\0",
 		HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
 	}
 };
@@ -312,15 +316,7 @@ failed:
 
 int is_separator(int c)
 {
-	return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];",c) != NULL;
-}
-
-int editorRowHasOpenComment(erow *row)
-{
-	if (row->hl && row->rsize && row->hl[row->rsize-1] == HL_MLCOMMENT &&
-		(row->rsize < 2 || (row->render[row->rsize-2] != '*' ||
-							row->render[row->rsize-1] != '/'))) return 1;
-	return 0;
+	return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];:",c) != NULL;
 }
 
 void editorUpdateSyntax(erow *row)
@@ -348,20 +344,19 @@ void editorUpdateSyntax(erow *row)
 	in_string = 0;
 	in_comment = 0;
 
-	if (row->idx > 0 && editorRowHasOpenComment(&E.row[row->idx-1]))
-		in_comment = 1;
+	if (row->idx > 0) in_comment = E.row[row->idx-1].hl_oc;
 
 	while(*p) {
-		if (prev_sep && *p == scs[0] && *(p+1) == scs[1]) {
+		if (!in_comment && prev_sep && *p == scs[0] && (!scs[1] || *(p+1) == scs[1])) {
 			memset(row->hl+i,HL_COMMENT,row->rsize-i);
 			return;
 		}
 
 		if (in_comment) {
 			row->hl[i] = HL_MLCOMMENT;
-			if (*p == mce[0] && *(p+1) == mce[1]) {
-				row->hl[i+1] = HL_MLCOMMENT;
-				p += 2; i += 2;
+			if (*p == mce[0] && *(p+1) == mce[1] && (!mce[2] || *(p+2) == mce[2])) {
+				for (++i,++p; i < row->rsize && mce[i]; ++i,++p)
+					row->hl[i] = HL_MLCOMMENT;
 				in_comment = 0;
 				prev_sep = 1;
 				continue;
@@ -370,10 +365,9 @@ void editorUpdateSyntax(erow *row)
 				p++; i++;
 				continue;
 			}
-		} else if (*p == mcs[0] && *(p+1) == mcs[1]) {
-			row->hl[i] = HL_MLCOMMENT;
-			row->hl[i+1] = HL_MLCOMMENT;
-			p += 2; i += 2;
+		} else if (*p == mcs[0] && *(p+1) == mcs[1] && (!mce[2] || *(p+2) == mce[2])) {
+			for (;i < row->rsize && mce[i]; ++i, ++p)
+				row->hl[i] = HL_MLCOMMENT;
 			in_comment = 1;
 			prev_sep = 0;
 			continue;
@@ -441,10 +435,11 @@ void editorUpdateSyntax(erow *row)
 		p++; i++;
 	}
 
-	int oc = editorRowHasOpenComment(row);
-	if (row->hl_oc != oc && row->idx+1 < E.numrows)
-		editorUpdateSyntax(&E.row[row->idx+1]);
-	row->hl_oc = oc;
+	if (!!row->hl_oc != !!in_comment) {
+		row->hl_oc = in_comment;
+		if (row->idx+1 < E.numrows)
+			editorUpdateSyntax(&E.row[row->idx+1]);
+	}
 }
 
 // map syntax highlight token types to terminal colors
@@ -495,7 +490,7 @@ void editorUpdateRow(erow *row)
 	unsigned long long allocsize =
 		(unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
 	if (allocsize > UINT32_MAX) {
-		printf("Some line of the edited file is too long for JACE.\n");
+		printf("Some lines of the edited file is too long for JACE.\n");
 		exit(1);
 	}
 
@@ -668,35 +663,52 @@ fixcursor:
 	E.coloff = 0;
 }
 
-void editorDelChar()
+void editorDelChar(int back)
 {
 	int filerow = E.rowoff+E.cy;
 	int filecol = E.coloff+E.cx;
-	erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
 
-	if (!row || (filecol == 0 && filerow == 0)) return;
-	if (filecol == 0) {
-		filecol = E.row[filerow-1].size;
-		editorRowAppendString(&E.row[filerow-1],row->chars,row->size);
-		editorDelRow(filerow);
-		row = NULL;
-		if (E.cy == 0)
-			E.rowoff--;
-		else
-			E.cy--;
-		E.cx = filecol;
-		if (E.cx >= E.screencols) {
-			int shift = (E.screencols-E.cx)+1;
-			E.cx -= shift;
-			E.coloff += shift;
+	if (filerow >= E.numrows) return;
+
+	erow *row = &E.row[filerow];
+
+	if (back) {
+		if (filecol == 0 && filerow == 0) return;
+		if (back && filecol == 0) {
+			filecol = E.row[filerow-1].size;
+			editorRowAppendString(&E.row[filerow-1],row->chars,row->size);
+			editorDelRow(filerow);
+			row = NULL;
+			if (E.cy == 0)
+				E.rowoff--;
+			else
+				E.cy--;
+			E.cx = filecol;
+			if (E.cx >= E.screencols) {
+				int shift = (E.screencols-E.cx)+1;
+				E.cx -= shift;
+				E.coloff += shift;
+			}
+		} else {
+			editorRowDelChar(row,filecol-1);
+			if (E.cx == 0 && E.coloff)
+				E.coloff--;
+			else
+				E.cx--;
 		}
 	} else {
-		editorRowDelChar(row,filecol-1);
-		if (E.cx == 0 && E.coloff)
-			E.coloff--;
-		else
-			E.cx--;
+		if (filerow == E.numrows-1 && filecol >= row->size) return;
+
+		if (filecol == row->size) {
+			erow *nextrow = (filerow + 1 >= E.numrows) ? NULL : &E.row[filerow + 1];
+			editorRowAppendString(&E.row[filerow],nextrow->chars,nextrow->size);
+			editorDelRow(filerow + 1);
+			row = NULL;
+		} else {
+			editorRowDelChar(row,filecol);
+		}
 	}
+
 	if (row) editorUpdateRow(row);
 	E.dirty++;
 }
@@ -786,15 +798,76 @@ void abFree(struct abuf *ab)
 	free(ab->b);
 }
 
+static void hideCursor(struct abuf *ab)
+{
+	abAppend(ab, "\x1b[?25l",6); // hide cursor
+	abAppend(ab, "\x1b[H",3);    // go home
+}
+
+static void setCursor(struct abuf *ab)
+{
+	int j;
+	int cx = 1;
+	int filerow = E.rowoff+E.cy;
+	char buf[32];
+
+	erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+	if (row) {
+		for (j = E.coloff; j < (E.cx+E.coloff); j++) {
+			if (j < row->size && row->chars[j] == TAB) cx += 8 - ((cx) % 8);
+			cx++;
+		}
+	}
+
+	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy+1, cx);
+	abAppend(ab, buf, strlen(buf));
+	abAppend(ab, "\x1b[?25h", 6); // show cursor
+}
+
+static void setStatus(struct abuf *ab, int putcursor)
+{
+	if (putcursor) {
+		char buf[32];
+		snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.screenrows+1,0);
+		abAppend(ab, buf, strlen(buf));
+	}
+
+	// first row
+	abAppend(ab, "\x1b[0K", 4);
+	abAppend(ab, "\x1b[7m", 4);
+
+	char status[80];
+	char rstatus[80];
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename, E.numrows, E.dirty ? "(modified)" : "");
+	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.rowoff + E.cy + 1, E.numrows);
+	
+	if (len > E.screencols) len = E.screencols;
+	abAppend(ab, status, len);
+	while (len < E.screencols) {
+		if (E.screencols - len == rlen) {
+			abAppend(ab, rstatus, rlen);
+			break;
+		} else {
+			abAppend(ab, " ", 1);
+			len++;
+		}
+	}
+	abAppend(ab, "\x1b[0m\r\n", 6);
+
+	// second row
+	abAppend(ab, "\x1b[0K", 4);
+	int msglen = strlen(E.statusmsg);
+	if (msglen && time(NULL) - E.statusmsg_time < 5)
+		abAppend(ab, E.statusmsg, msglen <= E.screencols ? msglen : E.screencols);
+}
+
 void editorRefreshScreen(void)
 {
 	int y;
 	erow *r;
-	char buf[32];
 	struct abuf ab = ABUF_INIT;
 
-	abAppend(&ab,"\x1b[?25l",6);
-	abAppend(&ab,"\x1b[H",3);
+	hideCursor(&ab);
 
 	for (y = 0; y < E.screenrows; y++) {
 		int filerow = E.rowoff+y;
@@ -859,48 +932,8 @@ void editorRefreshScreen(void)
 		abAppend(&ab,"\r\n",2);
 	}
 
-	abAppend(&ab,"\x1b[0K",4);
-	abAppend(&ab,"\x1b[7m",4);
-	char status[80], rstatus[80];
-	int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-		E.filename, E.numrows, E.dirty ? "(modified)" : "");
-	int rlen = snprintf(rstatus, sizeof(rstatus),
-		"%d/%d",E.rowoff+E.cy+1,E.numrows);
-	if (len > E.screencols) len = E.screencols;
-	abAppend(&ab,status,len);
-	while(len < E.screencols) {
-		if (E.screencols - len == rlen) {
-			abAppend(&ab,rstatus,rlen);
-			break;
-		} else {
-			abAppend(&ab," ",1);
-			len++;
-		}
-	}
-	abAppend(&ab,"\x1b[0m\r\n",6);
-
-	abAppend(&ab,"\x1b[0K",4);
-	int msglen = strlen(E.statusmsg);
-	if (msglen && time(NULL)-E.statusmsg_time < 5)
-		abAppend(&ab,E.statusmsg,msglen <= E.screencols ? msglen : E.screencols);
-
-	// put cursor at its current position
-	// horizontal pos of cursor might be different than E.cx because of TABs
-	int j;
-	int cx = 0;
-	int filerow = E.rowoff+E.cy;
-	erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-
-	if (row) {
-		for (j = E.coloff; j < (E.cx+E.coloff); j++) {
-			if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
-			cx++;
-		}
-	}
-
-	snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,cx+1);
-	abAppend(&ab,buf,strlen(buf));
-	abAppend(&ab,"\x1b[?25h",6); // show cursor
+	setStatus(&ab, 0);
+	setCursor(&ab);
 	write(STDOUT_FILENO,ab.b,ab.len);
 	abFree(&ab);
 }
@@ -1075,6 +1108,17 @@ void editorMoveCursor(int key)
 			}
 		}
 		break;
+	case HOME_KEY:
+		E.cx = 0;
+		E.coloff = 0;
+		break;
+	case END_KEY:
+		E.cx = E.row[filerow].size;
+		if (E.cx > E.screencols - 1) {
+			E.coloff = E.cx - E.screencols + 1;
+			E.cx = E.screencols - 1;
+		}
+		break;
 	}
 
 	// fix cx if the current line doesn't have enough chars
@@ -1091,9 +1135,10 @@ void editorMoveCursor(int key)
 	}
 }
 
-void editorProcessKeypress(int fd)
+int editorProcessKeypress(int fd)
 {
 	static int quit_times = 1;
+	int ret = 1;
 
 	int c = editorReadKey(fd);
 	switch(c) {
@@ -1108,7 +1153,7 @@ void editorProcessKeypress(int fd)
 			editorSetStatusMessage("WARNING!!! File has unsaved changes. "
 				"Press Ctrl-Q again to quit.", quit_times);
 			quit_times--;
-			return;
+			return ret;
 		} else {
 			char buf[32];
 			struct abuf ab = ABUF_INIT;
@@ -1127,8 +1172,10 @@ void editorProcessKeypress(int fd)
 		break;
 	case BACKSPACE:
 	case CTRL_H:
+		editorDelChar(1);
+		break;
 	case DEL_KEY:
-		editorDelChar();
+		editorDelChar(0);
 		break;
 	case PAGE_UP:
 	case PAGE_DOWN:
@@ -1143,12 +1190,16 @@ void editorProcessKeypress(int fd)
 											ARROW_DOWN);
 		}
 		break;
-
+	case HOME_KEY:
+	case END_KEY:
 	case ARROW_UP:
 	case ARROW_DOWN:
 	case ARROW_LEFT:
 	case ARROW_RIGHT:
+		ret = E.rowoff;
 		editorMoveCursor(c);
+		ret = (ret != E.rowoff);
+		if (!ret) ret = (E.coloff > E.screencols);
 		break;
 	case CTRL_L:
 		break;
@@ -1160,6 +1211,7 @@ void editorProcessKeypress(int fd)
 	}
 
 	quit_times = 1; // reset it to the original value
+	return ret;
 }
 
 int editorFileWasModified(void)
@@ -1202,7 +1254,6 @@ void initEditor(void)
 
 int main(int argc, char **argv)
 {
-	// TODO: create a new file when no filename specified
 	if (argc != 2) {
 		fprintf(stderr,"Usage: jace <filename>\n");
 		exit(1);
@@ -1213,10 +1264,19 @@ int main(int argc, char **argv)
 	editorOpen(argv[1]);
 	enableRawMode(STDIN_FILENO);
 	editorSetStatusMessage("HELP: Ctrl-S = Save | Ctrl-Q = Quit | Ctrl-F = Find");
+	editorRefreshScreen();
 
 	while(1) {
-		editorRefreshScreen();
-		editorProcessKeypress(STDIN_FILENO);
+		if (!editorProcessKeypress(STDIN_FILENO)) {
+			struct abuf ab = ABUF_INIT;
+			hideCursor(&ab);
+			setStatus(&ab, 1);
+			setCursor(&ab);
+			write(STDOUT_FILENO, ab.b, ab.len);
+			abFree(&ab);
+		} else {
+			editorRefreshScreen();
+		}
 	}
 
 	return 0;
