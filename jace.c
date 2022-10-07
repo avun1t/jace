@@ -20,7 +20,8 @@
 #include <fcntl.h>
 #include <signal.h>
 
-//#include "lexer.h"
+// indent on newline
+static int tabs = 0;
 
 typedef struct erow {
 	int idx;
@@ -342,6 +343,7 @@ void editorRowAppendString(erow *row, char *s, size_t len)
 
 void editorRowDelChar(erow *row, int at)
 {
+	if (row->chars+at == TAB) tabs -= 1;
 	if (row->size <= at) return;
 	memmove(row->chars+at,row->chars+at+1,row->size-at);
 	editorUpdateRow(row);
@@ -392,6 +394,11 @@ void editorInsertNewline(void)
 		row->size = filecol;
 		editorUpdateRow(row);
 	}
+	
+	for (int i = 0; i <= tabs; i++) {
+		editorInsertChar("\t");
+	}
+	
 fixcursor:
 	if (E.cy == E.screenrows-1) {
 		E.rowoff++;
@@ -554,6 +561,7 @@ static void setCursor(struct abuf *ab)
 	if (row) {
 		for (j = E.coloff; j < (E.cx+E.coloff); j++) {
 			if (j < row->size && row->chars[j] == TAB) cx += 8 - ((cx) % 8);
+			if (row->chars[j] == TAB) tabs += 1;
 			cx++;
 		}
 	}
