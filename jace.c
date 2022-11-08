@@ -20,8 +20,6 @@
 #include <fcntl.h>
 #include <signal.h>
 
-//#include "lexer.h"
-
 typedef struct erow {
 	int idx;
 	int size;
@@ -256,10 +254,12 @@ void editorInsertRow(int at, char *s, size_t len)
 {
 	if (at > E.numrows) return;
 	E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
+	
 	if (at != E.numrows) {
 		memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
 		for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
 	}
+	
 	E.row[at].size = len;
 	E.row[at].chars = malloc(len+1);
 	memcpy(E.row[at].chars,s,len+1);
@@ -285,6 +285,7 @@ void editorDelRow(int at)
 	row = E.row+at;
 	editorFreeRow(row);
 	memmove(E.row+at,E.row+at+1,sizeof(E.row[0])*(E.numrows-at-1));
+	
 	for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
 	E.numrows--;
 	E.dirty++;
@@ -877,11 +878,11 @@ int editorProcessKeypress(int fd)
 			E.cy = 0;
 		else if (c == PAGE_DOWN && E.cy != E.screenrows-1)
 			E.cy = E.screenrows-1;
+
 		{
 		int times = E.screenrows;
 		while(times--)
-			editorMoveCursor(c == PAGE_UP ? ARROW_UP:
-											ARROW_DOWN);
+			editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
 		}
 		break;
 	case HOME_KEY:
@@ -915,11 +916,11 @@ int editorFileWasModified(void)
 
 void updateWindowSize(void)
 {
-	if (getWindowSize(STDIN_FILENO,STDOUT_FILENO,
-					  &E.screenrows,&E.screencols) == -1) {
+	if (getWindowSize(STDIN_FILENO,STDOUT_FILENO, &E.screenrows,&E.screencols) == -1) {
 		perror("Unable to query the screen for size (columns / rows)");
 		exit(1);
 	}
+	
 	E.screenrows -= 2; // get room for status bar
 }
 
